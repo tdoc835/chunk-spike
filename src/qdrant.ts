@@ -6,6 +6,7 @@
  */
 
 import { QdrantClient } from '@qdrant/js-client-rest';
+import * as crypto from 'crypto';
 import type { Chunk } from './types';
 import type { ChunkEmbeddings } from './embeddings';
 import { chunk as batchArray } from './utils';
@@ -17,6 +18,9 @@ import { chunk as batchArray } from './utils';
 export interface QdrantPayload {
   // BM25 field - CRITICAL for keyword search
   text: string;
+
+  // Original chunk ID for reference
+  chunk_id: string;
 
   // Document metadata
   doc_id: string;
@@ -147,6 +151,19 @@ export async function ensureCollection(
 }
 
 /**
+ * Generates a valid UUID from a chunk ID string
+ * Uses SHA-256 hash and formats as UUID v4 format
+ *
+ * @param chunkId - The original chunk ID (e.g., "a1b2c3d4::0")
+ * @returns A valid UUID string
+ */
+function chunkIdToUuid(chunkId: string): string {
+  const hash = crypto.createHash('sha256').update(chunkId).digest('hex');
+  // Format as UUID: 8-4-4-4-12
+  return `${hash.slice(0, 8)}-${hash.slice(8, 12)}-${hash.slice(12, 16)}-${hash.slice(16, 20)}-${hash.slice(20, 32)}`;
+}
+
+/**
  * Converts chunks and embeddings to Qdrant points
  *
  * @param chunks - Array of document chunks
@@ -171,8 +188,11 @@ export function createPoints(
       throw new Error(`Missing embedding for chunk: ${chunk.id}`);
     }
 
+    // Generate a valid UUID from the chunk ID
+    const pointId = chunkIdToUuid(chunk.id);
+
     return {
-      id: chunk.id,
+      id: pointId,
       vector: {
         full_vector: embedding.fullVector,
         summary_vector: embedding.summaryVector
@@ -180,6 +200,9 @@ export function createPoints(
       payload: {
         // BM25 field - uses fullText for keyword search
         text: chunk.fullText,
+
+        // Original chunk ID for reference
+        chunk_id: chunk.id,
 
         // Document metadata
         doc_id: chunk.docId,
