@@ -51,6 +51,9 @@
  *   Example: 5,000 chunks × 2 embeddings × ~500 tokens = 5M tokens = ~$0.65
  */
 
+// Load environment variables from .env file FIRST
+import 'dotenv/config';
+
 import * as path from 'path';
 import OpenAI from 'openai';
 import { QdrantClient } from '@qdrant/js-client-rest';

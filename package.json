@@ -26,6 +26,7 @@
     "@qdrant/js-client-rest": "^1.12.0",
     "cheerio": "^1.0.0-rc.12",
     "commander": "^11.1.0",
+    "dotenv": "^16.3.1",
     "mailparser": "^3.6.6",
     "mammoth": "^1.6.0",
     "marked": "^11.1.1",
