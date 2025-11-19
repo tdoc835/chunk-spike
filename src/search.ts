@@ -51,6 +51,15 @@ interface SearchResult {
 }
 
 /**
+ * Hybrid search result with source tracking
+ */
+interface HybridResult extends SearchResult {
+  vectorRank?: number;
+  textRank?: number;
+  rrfScore: number;
+}
+
+/**
  * Main search function
  */
 async function main(): Promise<void> {
@@ -128,17 +137,16 @@ async function main(): Promise<void> {
         // Pure vector search
         const queryVector = await embedQuery(openai, query, config.embeddingModel);
         results = await vectorSearch(qdrant, config.collection, queryVector, limit);
+        displayResults(results, query, mode);
       } else if (mode === 'text') {
         // Pure text/BM25 search
         results = await textSearch(qdrant, config.collection, query, limit);
+        displayResults(results, query, mode);
       } else {
-        // Hybrid search with RRF
+        // Hybrid search with RRF - show detailed breakdown
         const queryVector = await embedQuery(openai, query, config.embeddingModel);
-        results = await hybridSearch(qdrant, config.collection, query, queryVector, limit);
+        await hybridSearchWithDetails(qdrant, config.collection, query, queryVector, limit);
       }
-
-      // Display results
-      displayResults(results, query, mode);
 
     } catch (error) {
       console.error('Search error:', (error as Error).message);
@@ -226,17 +234,19 @@ async function textSearch(
 }
 
 /**
- * Hybrid search combining vector and text search with RRF
+ * Hybrid search with detailed breakdown showing vector, text, and RRF results
  */
-async function hybridSearch(
+async function hybridSearchWithDetails(
   client: QdrantClient,
   collection: string,
   query: string,
   queryVector: number[],
   limit: number
-): Promise<SearchResult[]> {
-  // Fetch more results from each method for better fusion
-  const fetchLimit = limit * 3;
+): Promise<void> {
+  // Fetch 10x results from each method for better fusion
+  const fetchLimit = limit * 10;
+
+  console.log(`Fetching top ${fetchLimit} from each search method...\n`);
 
   // Run vector and text searches in parallel
   const [vectorResults, textResults] = await Promise.all([
@@ -244,11 +254,44 @@ async function hybridSearch(
     textSearch(client, collection, query, fetchLimit)
   ]);
 
+  // Display vector results
+  console.log('═'.repeat(80));
+  console.log(`VECTOR SEARCH RESULTS (${vectorResults.length} results)`);
+  console.log('═'.repeat(80));
+
+  const topVectorResults = vectorResults.slice(0, Math.min(10, vectorResults.length));
+  for (let i = 0; i < topVectorResults.length; i++) {
+    const r = topVectorResults[i];
+    console.log(`  [${i + 1}] Score: ${r.score.toFixed(4)} | ${getFilename(r.payload.source_path)} | ${truncateText(r.payload.title_text || r.payload.summary_text, 50)}`);
+  }
+  if (vectorResults.length > 10) {
+    console.log(`  ... and ${vectorResults.length - 10} more`);
+  }
+  console.log('');
+
+  // Display text results
+  console.log('═'.repeat(80));
+  console.log(`TEXT/BM25 SEARCH RESULTS (${textResults.length} results)`);
+  console.log('═'.repeat(80));
+
+  const topTextResults = textResults.slice(0, Math.min(10, textResults.length));
+  for (let i = 0; i < topTextResults.length; i++) {
+    const r = topTextResults[i];
+    console.log(`  [${i + 1}] ${getFilename(r.payload.source_path)} | ${truncateText(r.payload.title_text || r.payload.summary_text, 50)}`);
+  }
+  if (textResults.length > 10) {
+    console.log(`  ... and ${textResults.length - 10} more`);
+  }
+  if (textResults.length === 0) {
+    console.log('  No keyword matches found');
+  }
+  console.log('');
+
   // Apply Reciprocal Rank Fusion (RRF)
   // RRF score = sum of 1 / (k + rank) across all result lists
   // where k is a constant (typically 60)
   const k = 60;
-  const scores = new Map<string, { score: number; result: SearchResult }>();
+  const scores = new Map<string, HybridResult>();
 
   // Process vector results
   vectorResults.forEach((result, index) => {
@@ -256,9 +299,16 @@ async function hybridSearch(
     const rrfScore = 1 / (k + rank);
 
     if (scores.has(result.id)) {
-      scores.get(result.id)!.score += rrfScore;
+      const existing = scores.get(result.id)!;
+      existing.rrfScore += rrfScore;
+      existing.vectorRank = rank;
     } else {
-      scores.set(result.id, { score: rrfScore, result });
+      scores.set(result.id, {
+        ...result,
+        vectorRank: rank,
+        textRank: undefined,
+        rrfScore
+      });
     }
   });
 
@@ -268,22 +318,80 @@ async function hybridSearch(
     const rrfScore = 1 / (k + rank);
 
     if (scores.has(result.id)) {
-      scores.get(result.id)!.score += rrfScore;
+      const existing = scores.get(result.id)!;
+      existing.rrfScore += rrfScore;
+      existing.textRank = rank;
     } else {
-      scores.set(result.id, { score: rrfScore, result });
+      scores.set(result.id, {
+        ...result,
+        vectorRank: undefined,
+        textRank: rank,
+        rrfScore
+      });
     }
   });
 
-  // Sort by combined RRF score and return top results
+  // Sort by combined RRF score and get top results
   const combinedResults = Array.from(scores.values())
-    .sort((a, b) => b.score - a.score)
-    .slice(0, limit)
-    .map(({ score, result }) => ({
-      ...result,
-      score
-    }));
+    .sort((a, b) => b.rrfScore - a.rrfScore)
+    .slice(0, limit);
 
-  return combinedResults;
+  // Display RRF combined results with breakdown
+  console.log('═'.repeat(80));
+  console.log(`HYBRID RESULTS WITH RRF (top ${limit}, k=${k})`);
+  console.log('═'.repeat(80));
+  console.log('');
+
+  for (let i = 0; i < combinedResults.length; i++) {
+    const result = combinedResults[i];
+    const payload = result.payload;
+
+    // Show rank sources
+    const vectorInfo = result.vectorRank ? `Vector: #${result.vectorRank}` : 'Vector: -';
+    const textInfo = result.textRank ? `Text: #${result.textRank}` : 'Text: -';
+
+    console.log(`[${i + 1}] RRF Score: ${result.rrfScore.toFixed(6)}`);
+    console.log(`    Sources: ${vectorInfo} | ${textInfo}`);
+    console.log(`    File: ${getFilename(payload.source_path)} (${payload.doc_type.toUpperCase()})`);
+
+    if (payload.title_text) {
+      console.log(`    Title: ${payload.title_text}`);
+    }
+
+    if (payload.page_number) {
+      console.log(`    Page: ${payload.page_number}`);
+    } else if (payload.slide_number) {
+      console.log(`    Slide: ${payload.slide_number}`);
+    } else if (payload.sheet_name) {
+      console.log(`    Sheet: ${payload.sheet_name}`);
+    }
+
+    // Show preview
+    const preview = payload.summary_text || truncateText(payload.text, 150);
+    console.log(`    Preview: ${preview}`);
+    console.log('─'.repeat(80));
+  }
+
+  // Show RRF impact analysis
+  console.log('\nRRF IMPACT ANALYSIS:');
+
+  const bothSources = combinedResults.filter(r => r.vectorRank && r.textRank).length;
+  const vectorOnly = combinedResults.filter(r => r.vectorRank && !r.textRank).length;
+  const textOnly = combinedResults.filter(r => !r.vectorRank && r.textRank).length;
+
+  console.log(`  - Results appearing in BOTH: ${bothSources} (boosted by RRF)`);
+  console.log(`  - Results from VECTOR only: ${vectorOnly}`);
+  console.log(`  - Results from TEXT only: ${textOnly}`);
+
+  if (bothSources > 0) {
+    const boostedResults = combinedResults.filter(r => r.vectorRank && r.textRank);
+    console.log('\n  Boosted results (appeared in both):');
+    boostedResults.forEach(r => {
+      console.log(`    - ${getFilename(r.payload.source_path)}: Vector #${r.vectorRank} + Text #${r.textRank} → RRF ${r.rrfScore.toFixed(6)}`);
+    });
+  }
+
+  console.log('');
 }
 
 /**
