@@ -8,7 +8,8 @@
     "start": "ts-node src/chunker.ts",
     "dev": "ts-node src/chunker.ts",
     "process": "ts-node src/documentProcessor.ts",
-    "search": "ts-node src/search.ts"
+    "search": "ts-node src/search.ts",
+    "reset-collection": "ts-node src/resetCollection.ts"
   },
   "keywords": [
     "document",

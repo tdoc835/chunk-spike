@@ -87,6 +87,7 @@ export async function ensureCollection(
     console.log(`Creating collection: ${collectionName}`);
 
     // Create collection with named vectors for multi-vector support
+    // and sparse vectors for BM25 keyword search
     await client.createCollection(collectionName, {
       vectors: {
         full_vector: {
@@ -96,6 +97,12 @@ export async function ensureCollection(
         summary_vector: {
           size: vectorSize,
           distance: 'Cosine'
+        }
+      },
+      // Sparse vectors for BM25 keyword search - CRITICAL for hybrid search
+      sparse_vectors: {
+        text: {
+          index: {}
         }
       },
       // Enable on-disk payload for better memory efficiency
@@ -146,7 +153,24 @@ export async function ensureCollection(
     // Get collection info
     const info = await client.getCollection(collectionName);
     console.log(`  - Points count: ${info.points_count || 0}`);
-    console.log('');
+
+    // Check if sparse vectors are configured for BM25
+    const config = info.config as { params?: { sparse_vectors?: { text?: unknown } } } | undefined;
+    const hasSparseVectors = config?.params?.sparse_vectors?.text;
+
+    if (!hasSparseVectors) {
+      console.log('');
+      console.log('⚠️  WARNING: Collection exists but sparse vectors are NOT configured!');
+      console.log('⚠️  BM25 keyword search will NOT work with this configuration.');
+      console.log('');
+      console.log('To fix this:');
+      console.log('  1. Run: npm run reset-collection');
+      console.log('  2. Then re-run this processor to re-ingest documents');
+      console.log('');
+    } else {
+      console.log(`  - BM25 sparse vectors: configured`);
+      console.log('');
+    }
   }
 }
 
