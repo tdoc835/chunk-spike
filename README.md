@@ -239,6 +239,112 @@ src/
 4. **Complex layouts**: Multi-column or unusual layouts may chunk incorrectly
 5. **Large files**: Memory usage scales with file size
 
+## Document Processor Pipeline
+
+The project includes a complete document processing pipeline that wraps the chunker and adds:
+- OpenAI embedding generation (multi-vector per chunk)
+- Qdrant ingestion with hybrid search support (BM25 + dense vectors)
+- Batch processing with error handling
+
+### Quick Start
+
+```bash
+# 1. Start Qdrant locally
+docker run -p 6333:6333 -p 6334:6334 qdrant/qdrant
+
+# 2. Configure environment
+cp .env.example .env
+# Edit .env with your OPENAI_API_KEY
+
+# 3. Run the processor
+npm run process
+```
+
+### Environment Variables
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `OPENAI_API_KEY` | Yes | - | Your OpenAI API key |
+| `QDRANT_URL` | No | `http://localhost:6333` | Qdrant server URL |
+| `QDRANT_API_KEY` | No | - | Required for Qdrant Cloud |
+| `QDRANT_COLLECTION` | No | `dev_docs` | Collection name |
+| `SAMPLES_DIR` | No | `./samples` | Document directory |
+| `BATCH_SIZE` | No | `50` | Points per upsert |
+| `EMBEDDING_BATCH_SIZE` | No | `100` | Texts per embedding call |
+| `MAX_RETRIES` | No | `3` | API retry attempts |
+
+### How It Works
+
+1. **Document Discovery**: Recursively finds all supported documents in the samples directory
+2. **Chunking**: Uses the existing chunker to parse documents into structured chunks
+3. **Embedding Generation**: Creates two vectors per chunk using `text-embedding-3-large`:
+   - `full_vector`: Embedding of complete chunk content
+   - `summary_vector`: Embedding of summary text
+4. **Qdrant Ingestion**: Upserts points with:
+   - Named vectors for multi-vector search
+   - BM25-indexed `text` field for keyword search
+   - Rich payload with all chunk metadata
+
+### Qdrant Schema
+
+The processor creates a collection with:
+
+**Vectors:**
+- `full_vector`: 3072-dim, Cosine distance
+- `summary_vector`: 3072-dim, Cosine distance
+
+**Payload Fields:**
+- `text`: Full chunk text (BM25 indexed)
+- `doc_id`, `chunk_index`, `doc_type`, `source_path`
+- `heading_path`, `section_title`, `title_text`, `summary_text`
+- `is_table`, `is_code`
+- `page_number`, `slide_number`, `sheet_name`
+- `created_at`, `updated_at`, `metadata`
+
+### Cost Estimation
+
+Using `text-embedding-3-large` (~$0.00013 per 1K tokens):
+- 5,000 chunks × 2 embeddings × ~500 tokens = 5M tokens
+- Estimated cost: **~$0.65**
+
+### Example Output
+
+```
+Document Processor
+==================
+
+Configuration:
+  - Samples directory: ./samples
+  - Qdrant URL: http://localhost:6333
+  - Collection: dev_docs
+
+Found 250 documents to process
+
+[1/250] Processing: report.pdf ✓ (45 chunks)
+[2/250] Processing: presentation.pptx ✓ (28 chunks)
+...
+
+Total chunks: 5,432
+Estimated embedding cost: $0.65 (2,716,000 tokens)
+
+Generating embeddings for 5432 chunks...
+  - Full text embeddings: 5432
+  - Summary text embeddings: 5432
+
+  Embedding full texts...
+    [1/55] Embedding full batch (100 texts)... ✓
+    ...
+
+Upserting 5432 points to Qdrant...
+  [1/109] Upserting batch (50 points)... ✓
+  ...
+
+✓ Processing complete!
+  - Documents processed: 250/250
+  - Chunks created: 5,432
+  - Points upserted: 5,432
+```
+
 ## License
 
 MIT
