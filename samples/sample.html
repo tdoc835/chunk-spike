@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="description" content="Sample HTML document for testing">
+    <title>Sample HTML Document</title>
+</head>
+<body>
+    <h1>Sample HTML Document</h1>
+
+    <p>This is a sample HTML document for testing the document chunker.</p>
+
+    <h2>Introduction</h2>
+
+    <p>The HTML parser uses cheerio to extract content from HTML documents. It preserves semantic structure and removes unwanted elements like scripts and styles.</p>
+
+    <h3>Features</h3>
+
+    <ul>
+        <li>Heading extraction (h1-h6)</li>
+        <li>Table parsing</li>
+        <li>Code block detection</li>
+        <li>List handling</li>
+    </ul>
+
+    <h2>Technical Details</h2>
+
+    <h3>Code Example</h3>
+
+    <pre><code>
+const $ = cheerio.load(html);
+$('h1, h2, h3, h4, h5, h6').each((i, el) => {
+    console.log($(el).text());
+});
+    </code></pre>
+
+    <h3>Data Table</h3>
+
+    <table>
+        <tr>
+            <th>Tag</th>
+            <th>Description</th>
+            <th>Level</th>
+        </tr>
+        <tr>
+            <td>h1</td>
+            <td>Main heading</td>
+            <td>1</td>
+        </tr>
+        <tr>
+            <td>h2</td>
+            <td>Section heading</td>
+            <td>2</td>
+        </tr>
+        <tr>
+            <td>h3</td>
+            <td>Subsection heading</td>
+            <td>3</td>
+        </tr>
+    </table>
+
+    <h2>Conclusion</h2>
+
+    <p>The HTML parser effectively extracts structured content from HTML documents while maintaining the document hierarchy.</p>
+
+    <blockquote>
+        <p>Note: Scripts, styles, and navigation elements are automatically stripped.</p>
+    </blockquote>
+</body>
+</html>
