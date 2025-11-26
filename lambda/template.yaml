@@ -1,0 +1,226 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  Document Processing Pipeline Lambda
+
+  Processes documents uploaded to S3, chunks them, generates embeddings,
+  and stores in Qdrant for vector search.
+
+# Global settings for all functions
+Globals:
+  Function:
+    Timeout: 900  # 15 minutes for large documents
+    MemorySize: 1024  # 1GB RAM minimum for PDF processing
+    Runtime: nodejs18.x
+    Architectures:
+      - x86_64
+
+Parameters:
+  AiGatewayApiKey:
+    Type: String
+    Description: Vercel AI Gateway API Key
+    NoEcho: true
+
+  QdrantUrl:
+    Type: String
+    Description: Qdrant server URL
+    Default: http://localhost:6333
+
+  QdrantApiKey:
+    Type: String
+    Description: Qdrant API Key (optional)
+    Default: ''
+    NoEcho: true
+
+  # Example tenant bucket - in production, you would configure multiple buckets
+  TenantBucketName:
+    Type: String
+    Description: S3 bucket name in format {tenant-name}.{tenant-id-guid}
+    Default: ''
+
+  # Optional: VPC configuration for Qdrant in private subnet
+  VpcSubnetIds:
+    Type: CommaDelimitedList
+    Description: VPC Subnet IDs (comma-separated) for Lambda
+    Default: ''
+
+  VpcSecurityGroupIds:
+    Type: CommaDelimitedList
+    Description: VPC Security Group IDs (comma-separated) for Lambda
+    Default: ''
+
+Conditions:
+  HasTenantBucket: !Not [!Equals [!Ref TenantBucketName, '']]
+  HasVpcConfig: !And
+    - !Not [!Equals [!Join ['', !Ref VpcSubnetIds], '']]
+    - !Not [!Equals [!Join ['', !Ref VpcSecurityGroupIds], '']]
+  HasQdrantApiKey: !Not [!Equals [!Ref QdrantApiKey, '']]
+
+Resources:
+  # Lambda function for document processing
+  DocumentPipelineFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: document-pipeline
+      Description: Processes documents from S3, chunks, embeds, and stores in Qdrant
+      Handler: dist/handler.handler
+      CodeUri: ./
+
+      # Environment variables
+      Environment:
+        Variables:
+          AI_GATEWAY_API_KEY: !Ref AiGatewayApiKey
+          QDRANT_URL: !Ref QdrantUrl
+          QDRANT_API_KEY: !If [HasQdrantApiKey, !Ref QdrantApiKey, !Ref 'AWS::NoValue']
+
+      # Memory and timeout for large documents
+      MemorySize: 1024
+      Timeout: 900
+
+      # Ephemeral storage for /tmp (increase for large files)
+      EphemeralStorage:
+        Size: 1024  # 1GB, can be up to 10GB
+
+      # VPC configuration (if Qdrant is in VPC)
+      VpcConfig: !If
+        - HasVpcConfig
+        - SubnetIds: !Ref VpcSubnetIds
+          SecurityGroupIds: !Ref VpcSecurityGroupIds
+        - !Ref 'AWS::NoValue'
+
+      # S3 trigger event (if bucket is specified)
+      Events:
+        S3Trigger:
+          Type: S3
+          Condition: HasTenantBucket
+          Properties:
+            Bucket: !Ref TenantDocumentBucket
+            Events: s3:ObjectCreated:*
+            Filter:
+              S3Key:
+                Rules:
+                  # Only trigger for supported file types
+                  - Name: suffix
+                    Value: .pdf
+                  - Name: suffix
+                    Value: .docx
+                  - Name: suffix
+                    Value: .xlsx
+                  - Name: suffix
+                    Value: .pptx
+                  - Name: suffix
+                    Value: .txt
+                  - Name: suffix
+                    Value: .md
+                  - Name: suffix
+                    Value: .html
+                  - Name: suffix
+                    Value: .eml
+                  - Name: suffix
+                    Value: .msg
+
+      # IAM policies
+      Policies:
+        - Version: '2012-10-17'
+          Statement:
+            # S3 read access - broad pattern to allow any tenant bucket
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:GetObjectVersion
+              Resource: 'arn:aws:s3:::*/*'
+            # CloudWatch Logs
+            - Effect: Allow
+              Action:
+                - logs:CreateLogGroup
+                - logs:CreateLogStream
+                - logs:PutLogEvents
+              Resource: 'arn:aws:logs:*:*:*'
+
+    Metadata:
+      BuildMethod: makefile
+
+  # Example tenant bucket (optional - create separately for each tenant)
+  TenantDocumentBucket:
+    Type: AWS::S3::Bucket
+    Condition: HasTenantBucket
+    Properties:
+      BucketName: !Ref TenantBucketName
+      NotificationConfiguration:
+        LambdaConfigurations:
+          - Event: s3:ObjectCreated:*
+            Function: !GetAtt DocumentPipelineFunction.Arn
+      # Enable versioning for audit trail
+      VersioningConfiguration:
+        Status: Enabled
+      # Lifecycle rules for old versions
+      LifecycleConfiguration:
+        Rules:
+          - Id: DeleteOldVersions
+            Status: Enabled
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 30
+      # Block public access
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  # Permission for S3 to invoke Lambda
+  S3InvokePermission:
+    Type: AWS::Lambda::Permission
+    Condition: HasTenantBucket
+    Properties:
+      FunctionName: !Ref DocumentPipelineFunction
+      Action: lambda:InvokeFunction
+      Principal: s3.amazonaws.com
+      SourceAccount: !Ref AWS::AccountId
+      SourceArn: !Sub 'arn:aws:s3:::${TenantBucketName}'
+
+  # CloudWatch Log Group with retention
+  DocumentPipelineLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${DocumentPipelineFunction}'
+      RetentionInDays: 14
+
+  # Dead Letter Queue for failed invocations
+  DocumentPipelineDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: document-pipeline-dlq
+      MessageRetentionPeriod: 1209600  # 14 days
+
+  # DLQ configuration for the Lambda
+  DocumentPipelineFunctionEventInvokeConfig:
+    Type: AWS::Lambda::EventInvokeConfig
+    Properties:
+      FunctionName: !Ref DocumentPipelineFunction
+      Qualifier: $LATEST
+      MaximumRetryAttempts: 2
+      DestinationConfig:
+        OnFailure:
+          Destination: !GetAtt DocumentPipelineDLQ.Arn
+
+Outputs:
+  FunctionArn:
+    Description: Lambda Function ARN
+    Value: !GetAtt DocumentPipelineFunction.Arn
+
+  FunctionName:
+    Description: Lambda Function Name
+    Value: !Ref DocumentPipelineFunction
+
+  TenantBucketArn:
+    Description: Tenant S3 Bucket ARN
+    Condition: HasTenantBucket
+    Value: !GetAtt TenantDocumentBucket.Arn
+
+  DLQUrl:
+    Description: Dead Letter Queue URL
+    Value: !Ref DocumentPipelineDLQ
+
+  LogGroupName:
+    Description: CloudWatch Log Group
+    Value: !Ref DocumentPipelineLogGroup

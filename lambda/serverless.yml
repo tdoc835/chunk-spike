@@ -1,0 +1,177 @@
+# Serverless Framework configuration for Document Processing Pipeline
+# Alternative to SAM template for those using Serverless Framework
+
+service: document-pipeline
+
+frameworkVersion: '3'
+
+provider:
+  name: aws
+  runtime: nodejs18.x
+  stage: ${opt:stage, 'dev'}
+  region: ${opt:region, 'us-east-1'}
+
+  # Memory and timeout for large documents
+  memorySize: 1024
+  timeout: 900  # 15 minutes
+
+  # Ephemeral storage for /tmp
+  ephemeralStorageSize: 1024  # 1GB
+
+  # Environment variables
+  environment:
+    AI_GATEWAY_API_KEY: ${env:AI_GATEWAY_API_KEY}
+    QDRANT_URL: ${env:QDRANT_URL, 'http://localhost:6333'}
+    QDRANT_API_KEY: ${env:QDRANT_API_KEY, ''}
+
+  # IAM role statements
+  iam:
+    role:
+      statements:
+        # S3 read access for any tenant bucket
+        - Effect: Allow
+          Action:
+            - s3:GetObject
+            - s3:GetObjectVersion
+          Resource: 'arn:aws:s3:::*/*'
+        # CloudWatch Logs
+        - Effect: Allow
+          Action:
+            - logs:CreateLogGroup
+            - logs:CreateLogStream
+            - logs:PutLogEvents
+          Resource: 'arn:aws:logs:*:*:*'
+        # SQS for DLQ
+        - Effect: Allow
+          Action:
+            - sqs:SendMessage
+          Resource:
+            Fn::GetAtt: [DocumentPipelineDLQ, Arn]
+
+  # VPC configuration (uncomment if Qdrant is in VPC)
+  # vpc:
+  #   securityGroupIds:
+  #     - sg-xxxxxxxx
+  #   subnetIds:
+  #     - subnet-xxxxxxxx
+  #     - subnet-yyyyyyyy
+
+# Custom configuration
+custom:
+  # Tenant bucket name (set via CLI or env)
+  tenantBucket: ${env:TENANT_BUCKET_NAME, ''}
+
+# Package configuration
+package:
+  individually: true
+  patterns:
+    - '!**'
+    - 'dist/**'
+    - 'node_modules/**'
+    - '!node_modules/@types/**'
+    - '!node_modules/typescript/**'
+
+# Functions
+functions:
+  documentPipeline:
+    name: document-pipeline-${self:provider.stage}
+    description: Processes documents from S3, chunks, embeds, and stores in Qdrant
+    handler: dist/handler.handler
+
+    # Event sources
+    events:
+      # S3 trigger - configure per tenant bucket
+      # Uncomment and modify for each tenant bucket
+      # - s3:
+      #     bucket: ${self:custom.tenantBucket}
+      #     event: s3:ObjectCreated:*
+      #     existing: true  # Use if bucket already exists
+      #     rules:
+      #       - suffix: .pdf
+      #       - suffix: .docx
+      #       - suffix: .xlsx
+      #       - suffix: .pptx
+      #       - suffix: .txt
+      #       - suffix: .md
+      #       - suffix: .html
+      #       - suffix: .eml
+      #       - suffix: .msg
+
+      # Manual invocation endpoint (optional)
+      # - http:
+      #     path: process
+      #     method: post
+      #     private: true
+
+    # Dead Letter Queue
+    destinations:
+      onFailure:
+        type: sqs
+        arn:
+          Fn::GetAtt: [DocumentPipelineDLQ, Arn]
+
+    # Retry configuration
+    maximumRetryAttempts: 2
+
+# Resources
+resources:
+  Resources:
+    # Dead Letter Queue for failed invocations
+    DocumentPipelineDLQ:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: document-pipeline-dlq-${self:provider.stage}
+        MessageRetentionPeriod: 1209600  # 14 days
+        VisibilityTimeout: 900  # Match Lambda timeout
+
+    # CloudWatch Log Group with retention
+    DocumentPipelineLogGroup:
+      Type: AWS::Logs::LogGroup
+      Properties:
+        LogGroupName: /aws/lambda/document-pipeline-${self:provider.stage}
+        RetentionInDays: 14
+
+    # Example: S3 bucket for a tenant (create one per tenant)
+    # TenantBucket:
+    #   Type: AWS::S3::Bucket
+    #   Properties:
+    #     BucketName: ${self:custom.tenantBucket}
+    #     NotificationConfiguration:
+    #       LambdaConfigurations:
+    #         - Event: s3:ObjectCreated:*
+    #           Function:
+    #             Fn::GetAtt: [DocumentPipelineLambdaFunction, Arn]
+    #     VersioningConfiguration:
+    #       Status: Enabled
+    #     PublicAccessBlockConfiguration:
+    #       BlockPublicAcls: true
+    #       BlockPublicPolicy: true
+    #       IgnorePublicAcls: true
+    #       RestrictPublicBuckets: true
+
+  Outputs:
+    FunctionArn:
+      Description: Lambda Function ARN
+      Value:
+        Fn::GetAtt: [DocumentPipelineLambdaFunction, Arn]
+
+    DLQUrl:
+      Description: Dead Letter Queue URL
+      Value:
+        Ref: DocumentPipelineDLQ
+
+# Plugins
+plugins:
+  - serverless-esbuild  # For bundling TypeScript
+
+# esbuild configuration
+esbuild:
+  bundle: true
+  minify: false
+  sourcemap: true
+  target: node18
+  platform: node
+  external:
+    - '@aws-sdk/*'  # AWS SDK v3 is included in Lambda runtime
+  define:
+    'process.env.NODE_ENV': '"production"'
