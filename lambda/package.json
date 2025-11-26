@@ -4,14 +4,15 @@
   "description": "AWS Lambda function for document processing pipeline - parses, chunks, embeds, and stores documents in Qdrant",
   "main": "dist/handler.js",
   "scripts": {
-    "build": "tsc",
-    "build:prod": "tsc && npm run bundle",
-    "bundle": "esbuild dist/handler.js --bundle --platform=node --target=node18 --outfile=bundle/handler.js --external:@aws-sdk/*",
-    "clean": "rm -rf dist bundle",
+    "clean": "rm -rf dist staging lambda-deployment.zip",
     "typecheck": "tsc --noEmit",
+    "build": "node scripts/build.js",
+    "build:dev": "tsc",
+    "package": "npm run clean && npm run build && node scripts/package.js",
+    "package:quick": "npm run build && node scripts/package.js",
+    "deploy": "npm run package && aws lambda update-function-code --function-name document-pipeline --zip-file fileb://lambda-deployment.zip",
     "test": "echo \"No tests configured\" && exit 0",
-    "package": "npm run clean && npm run build:prod && cd bundle && zip -r ../function.zip .",
-    "deploy": "npm run package && aws lambda update-function-code --function-name document-pipeline --zip-file fileb://function.zip"
+    "verify-zip": "unzip -l lambda-deployment.zip"
   },
   "keywords": [
     "aws",
@@ -28,7 +29,6 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
-    "@aws-sdk/client-s3": "^3.0.0",
     "@kenjiuno/msgreader": "^1.26.0",
     "@qdrant/js-client-rest": "^1.12.0",
     "ai": "^5.0.0",
@@ -47,7 +47,8 @@
     "@types/node": "^20.10.6",
     "@types/unzipper": "^0.10.9",
     "@types/xml2js": "^0.4.14",
-    "esbuild": "^0.19.11",
+    "archiver": "^6.0.1",
+    "esbuild": "^0.20.0",
     "typescript": "^5.3.3"
   },
   "engines": {

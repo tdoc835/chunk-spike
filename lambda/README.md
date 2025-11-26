@@ -19,6 +19,72 @@ S3 Upload → Lambda → Parse → Chunk → Embed → Qdrant
                               (AI Gateway routing)
 ```
 
+## Quick Start
+
+```bash
+# Install dependencies
+npm install
+
+# Build and package for deployment
+npm run package
+
+# Deploy to AWS Lambda
+npm run deploy
+```
+
+## Build & Packaging
+
+The project uses **esbuild** for fast, optimized builds that produce small deployment packages.
+
+### Available Scripts
+
+| Script | Description |
+|--------|-------------|
+| `npm run build` | Bundle TypeScript to single JS file using esbuild |
+| `npm run build:dev` | Compile TypeScript with tsc (for debugging) |
+| `npm run package` | Clean, build, and create deployment zip |
+| `npm run package:quick` | Build and package without cleaning |
+| `npm run deploy` | Package and deploy to AWS Lambda |
+| `npm run typecheck` | Run TypeScript type checking |
+| `npm run verify-zip` | List contents of deployment zip |
+| `npm run clean` | Remove build artifacts |
+
+### Build Process
+
+```bash
+npm run package
+```
+
+This command:
+1. **Cleans** previous build artifacts (`dist/`, `staging/`, `lambda-deployment.zip`)
+2. **Bundles** TypeScript using esbuild with:
+   - Tree-shaking to remove unused code
+   - Minification for smaller size
+   - Node.js 20 target
+   - AWS SDK externalized (provided by Lambda runtime)
+3. **Creates** `lambda-deployment.zip` containing the bundled `handler.js`
+
+### Build Output
+
+```
+📦 Output:
+   File: lambda-deployment.zip
+   Size: ~2-5 MB (varies by dependencies)
+   Files: 1 (handler.js)
+
+✅ Package is within Lambda direct upload limit (50MB)
+```
+
+### Why esbuild?
+
+| Feature | Benefit |
+|---------|---------|
+| **Single file bundle** | No node_modules in deployment |
+| **Tree-shaking** | Only includes used code |
+| **Minification** | Smaller file size |
+| **Fast builds** | Sub-second build times |
+| **Faster cold starts** | Less code to load at startup |
+
 ## Tenant ID Extraction
 
 The tenant ID (Qdrant collection name) is extracted from the S3 bucket name:
@@ -69,6 +135,25 @@ Each chunk is stored in Qdrant with the following payload:
 
 ## Deployment
 
+### Direct Upload (Recommended for <50MB)
+
+```bash
+# Build and package
+npm run package
+
+# Deploy
+aws lambda update-function-code \
+  --function-name document-pipeline \
+  --zip-file fileb://lambda-deployment.zip
+```
+
+### Using npm deploy script
+
+```bash
+# One command to package and deploy
+npm run deploy
+```
+
 ### Using SAM
 
 ```bash
@@ -76,7 +161,7 @@ Each chunk is stored in Qdrant with the following payload:
 npm install
 npm run build
 
-# Deploy
+# Deploy with SAM
 sam build
 sam deploy --guided \
   --parameter-overrides \
@@ -95,16 +180,17 @@ npm install
 serverless deploy --stage prod
 ```
 
-### Manual Package
+### S3 Upload (for packages >50MB)
 
 ```bash
-# Build and package
-npm run package
+# Upload to S3
+aws s3 cp lambda-deployment.zip s3://my-deployment-bucket/lambda-deployment.zip
 
-# Deploy
+# Deploy from S3
 aws lambda update-function-code \
   --function-name document-pipeline \
-  --zip-file fileb://function.zip
+  --s3-bucket my-deployment-bucket \
+  --s3-key lambda-deployment.zip
 ```
 
 ## Lambda Configuration
@@ -114,6 +200,8 @@ aws lambda update-function-code \
 | Memory | 1024 MB | Minimum for PDF processing |
 | Timeout | 900s (15 min) | Large documents may take time |
 | Ephemeral Storage | 1024 MB | For temp file storage |
+| Handler | handler.handler | Entry point |
+| Runtime | Node.js 20.x | Target runtime |
 
 ## Adding S3 Triggers
 
@@ -147,7 +235,10 @@ npm install
 # Type check
 npm run typecheck
 
-# Build
+# Build (development mode with tsc)
+npm run build:dev
+
+# Build (production mode with esbuild)
 npm run build
 
 # Test locally (requires SAM CLI)
@@ -211,8 +302,37 @@ lambda/
 ├── utils/
 │   ├── idGenerator.ts
 │   └── textUtils.ts
+├── scripts/
+│   ├── build.js            # esbuild bundling script
+│   └── package.js          # Zip packaging script
 ├── package.json
 ├── tsconfig.json
 ├── template.yaml           # SAM template
 └── serverless.yml          # Serverless Framework config
 ```
+
+## Troubleshooting
+
+### Build Fails
+
+```bash
+# Clear node_modules and reinstall
+rm -rf node_modules
+npm install
+
+# Clear build artifacts
+npm run clean
+```
+
+### Package Too Large
+
+The esbuild bundler creates optimized packages. If still too large:
+1. Check `dist/metafile.json` to see what's included
+2. Add large, unused dependencies to externals in `scripts/build.js`
+3. Use Lambda Layers for large native dependencies
+
+### Cold Start Issues
+
+- Increase Lambda memory (also increases CPU)
+- Use Provisioned Concurrency for latency-sensitive workloads
+- The esbuild bundle already optimizes for fast startup
